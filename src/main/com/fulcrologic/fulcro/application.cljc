@@ -203,9 +203,12 @@
    * `:submit-transaction!` - A function to implement how to submit transactions. This allows you to override how transactions
      are processed in Fulcro.  Calls to `comp/transact!` will come through this algorithm.
    * `:abort-transaction!` - The function that can abort submitted transactions. Must be provided if you override
-     `:submit-transaction!`, since the two are related."
+     `:submit-transaction!`, since the two are related.
+   * `:batched-reads?` - Default false. When true, the tx processing will attempt to batch together multiple loads into
+     a single request. WARNING: The server MUST support this as well (the latest built-in handle-api-request does)."
   ([] (fulcro-app {}))
   ([{:keys [props-middleware
+            batched-reads?
             global-eql-transform
             global-error-action
             default-result-action!

@@ -94,30 +94,22 @@
     (into #{} (map :key) children)
     #{key}))
 
-(defn combine-sends
-  "Takes a send queue and returns a map containing a new combined send node that can act as a single network request,
-  along with the updated send queue."
-  [app remote-name send-queue]
-  [:com.fulcrologic.fulcro.application/app :com.fulcrologic.fulcro.application/remote-name ::send-queue => (s/keys :opt [::send-node] :req [::send-queue])]
-  (let [[active-nodes send-queue] (split-with ::active? send-queue)
-        send-queue        (sort-queue-writes-before-reads (vec send-queue))
-        id-to-send        (-> send-queue first ::id)
-        options           (-> send-queue first ::options)
-        [to-send to-defer] (split-with #(= id-to-send (::id %)) send-queue)
-        tx                (reduce
+(defn create-combined-node [app remote-name [leader :as to-send]]
+  (let [tx                (reduce
                             (fn [acc {:keys [::ast]}]
                               (let [tx (futil/ast->query ast)]
                                 (into acc tx)))
                             []
                             to-send)
         ast               (eql/query->ast tx)
+        options           (::options leader)
         combined-node-id  (tempid/uuid)
         combined-node-idx 0
         combined-node     {::id             combined-node-id
                            ::idx            combined-node-idx
                            ::ast            ast
                            ::options        options
-                           ::update-handler (fn [{:keys [body] :as combined-result}]
+                           ::update-handler (fn [combined-result]
                                               (doseq [{::keys [update-handler]} to-send]
                                                 (when update-handler
                                                   (update-handler combined-result))))
@@ -134,10 +126,93 @@
                                                   (result-handler result)))
                                               (remove-send! app remote-name combined-node-id combined-node-idx))
                            ::active?        true}]
-    (if (seq to-send)
-      {::send-node  combined-node
-       ::send-queue (into [] (concat active-nodes [combined-node] to-defer))}
-      {::send-queue send-queue})))
+    combined-node))
+
+(>defn batchable?
+  "Returns true when ALL of the ::send-node entries in `to-send` can be batched into an existing batch."
+  [to-send]
+  [(s/coll-of ::send-node) => boolean?]
+  (boolean
+    (and
+      (seq to-send)
+      (not
+        (some
+          (fn [{::keys [ast options]}]
+            (or
+              (contains? options ::abort-id)
+              (and (map? ast) (= :call (:type ast)))
+              (boolean (some #(= :call (:type %)) (:children ast)))))
+          to-send)))))
+
+(defn batch-sends
+  [app remote-name send-queue]
+  [:com.fulcrologic.fulcro.application/app :com.fulcrologic.fulcro.application/remote-name ::send-queue => (s/keys :opt [::send-node] :req [::send-queue])]
+  (let [{:keys [batch remainder]} (loop [result {:batch []}
+                                         queue  send-queue]
+                                    (let [leader (first queue)
+                                          [to-send remainder] (split-with #(= (::id leader) (::id %)) queue)]
+                                      (if (batchable? to-send)
+                                        (let [combined-node (create-combined-node app remote-name to-send)
+                                              new-result    (update result :batch conj combined-node)]
+                                          (if (seq remainder)
+                                            (recur new-result remainder)
+                                            (assoc new-result :remainder [])))
+                                        (assoc result :remainder queue))))
+        batch-node-id  (tempid/uuid)
+        batch-node-idx 0
+        batch-node     {::id             batch-node-id
+                        ::idx            batch-node-idx
+                        ::raw-body       {:queries (mapv
+                                                     (fn [{::keys [ast]}] (futil/ast->query ast))
+                                                     batch)}
+                        ::options        {}
+                        ::batch          batch
+                        ::update-handler (fn [combined-result]
+                                           (loop [{::keys [update-handler]} (first batch)
+                                                  more-batch  (next batch)
+                                                  result      (first combined-result)
+                                                  more-result (next combined-result)]
+                                             (when update-handler
+                                               (update-handler result))
+                                             (when (and (seq more-batch) (seq more-result))
+                                               (recur (first more-batch) (next more-batch)
+                                                 (first more-result) (next more-result)))))
+                        ::result-handler (fn [{:keys [body] :as batch-result}]
+                                           (loop [{::keys [result-handler]} (first batch)
+                                                  more-batch  (next batch)
+                                                  result      (first body)
+                                                  more-result (next body)]
+                                             (result-handler (assoc batch-result :body result))
+                                             (when (and (seq more-batch) (seq more-result))
+                                               (recur (first more-batch) (next more-batch)
+                                                 (first more-result) (next more-result))))
+                                           (remove-send! app remote-name batch-node-id batch-node-idx))
+                        ::active?        true}]
+    (when (> (count batch) 1) (log/debug "Batched:" (count batch)))
+    {::send-node  batch-node
+     ::send-queue (into [batch-node] remainder)}))
+
+(defn combine-sends
+  "Takes a send queue and returns a map containing a new combined send node that can act as a single network request,
+  along with the updated send queue."
+  [app remote-name send-queue]
+  [:com.fulcrologic.fulcro.application/app :com.fulcrologic.fulcro.application/remote-name ::send-queue => (s/keys :opt [::send-node] :req [::send-queue])]
+  (if (seq send-queue)
+    (let [{:keys [supports-raw-body?]} (get (app->remotes app) remote-name)
+          [_active-nodes send-queue] (split-with ::active? send-queue)
+          send-queue     (sort-queue-writes-before-reads (vec send-queue))
+          id-to-send     (-> send-queue first ::id)
+          [to-send to-defer] (split-with #(= id-to-send (::id %)) send-queue)
+          batched-reads? (-> app :com.fulcrologic.fulcro.application/config :batched-reads? boolean)
+          batch?         (and batched-reads? supports-raw-body? (batchable? to-send))]
+      (if batch?
+        (batch-sends app remote-name send-queue)
+        (if (seq to-send)
+          (let [combined-node (create-combined-node app remote-name to-send)]
+            {::send-node  combined-node
+             ::send-queue (into [combined-node] to-defer)})
+          {::send-queue send-queue})))
+    {::send-queue []}))
 
 (defn net-send!
   "Process the send against the user-defined remote. Catches exceptions and calls error handler with status code 500
@@ -147,14 +222,22 @@
   (enc/if-let [remote    (get (app->remotes app) remote-name)
                transmit! (get remote :transmit!)]
     (try
-      (inspect/ilet [tx (futil/ast->query (::ast send-node))]
-        (inspect/send-started! app remote-name (::id send-node) tx))
+      (inspect/ido
+        (if-let [batch (::batch send-node)]
+          (doseq [element-node batch]
+            (inspect/ilet [tx (futil/ast->query (::ast element-node))]
+              (inspect/send-started! app remote-name (::id element-node) tx)))
+          (inspect/ilet [tx (futil/ast->query (::ast send-node))]
+            (inspect/send-started! app remote-name (::id send-node) tx))))
       (transmit! remote send-node)
       (catch #?(:cljs :default :clj Exception) e
         (log/error e "Send threw an exception for tx:" (futil/ast->query (::ast send-node)) "See https://book.fulcrologic.com/#err-txp-send-exc")
         (try
           (inspect/ido
-            (inspect/send-failed! app (::id send-node) "Transmit Exception"))
+            (if-let [batch (::batch send-node)]
+              (doseq [element-node batch]
+                (inspect/send-failed! app (::id element-node) "Transmit Exception"))
+              (inspect/send-failed! app (::id send-node) "Transmit Exception")))
           ((::result-handler send-node) {:status-code      500
                                          :client-exception e})
           (catch #?(:cljs :default :clj Exception) e

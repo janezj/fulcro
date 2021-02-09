@@ -182,7 +182,8 @@
 (def ^:deprecated default-tx! txn/default-tx!)
 
 (defn fulcro-app
-  "Create a new Fulcro application. See com.fulcrologic.fulcro.application/fulcro-app for the React-based initializer.
+  "Create a new Fulcro application. See com.fulcrologic.fulcro.application/fulcro-app for the React-based initializer,
+  which describes all supported options.
 
   This version creates an app that is not attached to React, and has no default root or optimized render. The
   map of initial options is the same *except* that react-centric options are obviously ignore, and also:
@@ -205,6 +206,7 @@
   "
   ([] (fulcro-app {}))
   ([{:keys [props-middleware
+            batched-reads?
             global-eql-transform
             global-error-action
             default-result-action!
@@ -233,6 +235,7 @@
      {:com.fulcrologic.fulcro.application/id           (tempid/uuid)
       :com.fulcrologic.fulcro.application/state-atom   (atom (or initial-db {}))
       :com.fulcrologic.fulcro.application/config       {:load-marker-default     load-marker-default
+                                                        :batched-reads? (boolean batched-reads?)
                                                         :client-did-mount        (or client-did-mount (:started-callback options))
                                                         :client-will-mount       client-will-mount
                                                         :external-config         external-config
