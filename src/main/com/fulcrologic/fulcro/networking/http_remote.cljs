@@ -356,7 +356,7 @@
                              (if-let [real-request (try
                                                      (request-middleware {:headers {} :body base-body :url url :method :post})
                                                      (catch :default e
-                                                       (log/error e "Send aborted due to middleware failure. See https://book.fulcrologic.com/#err-httpr-send-abort")
+                                                       (log/error e "Send aborted due to middleware failure. Did you accidentally put a lambda in params? See https://book.fulcrologic.com/#err-httpr-send-abort")
                                                        nil))]
                                (let [abort-id             (or
                                                             (-> send-node ::txn/options ::txn/abort-id)
