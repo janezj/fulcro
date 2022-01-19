@@ -2,6 +2,7 @@
   (:require
     [nubank.workspaces.card-types.fulcro3 :as ct.fulcro]
     [nubank.workspaces.core :as ws]
+    [com.fulcrologic.fulcro.algorithms.merge :as merge]
     [com.wsscode.pathom.connect :as pc]
     [com.wsscode.pathom.core :as p]
     [com.fulcrologic.fulcro.components :as comp :refer [defsc]]
@@ -73,6 +74,10 @@
    :ident               :id}
   (dom/div "B2"))
 
+(defrouter TabRouter [this props]
+  {:router-targets [A2]})
+(def ui-tab-router (comp/factory TabRouter))
+
 (defrouter ARouter [this props]
   {:router-targets [A1 A2]})
 (def ui-a-router (comp/factory ARouter))
@@ -117,26 +122,109 @@
 
 (def ui-a (comp/factory A {:keyfn :id}))
 
+(defsc BigDetail [this {id :data/id, router :ui/router :as props}]
+  {:query               [:data/id {:ui/router (comp/get-query TabRouter)}]
+   :route-segment       ["big-detail"]
+   :will-enter          (fn [app params]
+                          (log/info "BigDetail will enter, params:" params)
+                          (dr/route-immediate [:data/id 1]))
+   :will-leave          (fn [cls props] (log/info "BigDetail will leave"))
+   :allow-route-change? (fn [c] (log/info "BigDetail allow route change?") true)
+   :initial-state       {:data/id 2 :ui/router {}}
+   :ident               :data/id}
+  (dom/div {}
+    (dom/h2 "A")
+    (dom/button {:onClick (fn [] (dr/change-route-relative! this A ["a1"]))} "A1 (relative)")
+    (dom/button {:onClick (fn [] (dr/change-route-relative! this A ["a2"]))} "A2 (relative)")
+    (ui-a-router router)))
+
+
+(defsc Data [this {:data/keys [id label xml txt] :as props}]
+  {:query         [:data/id :data/label :data/xml :data/txt]
+   :ident         :data/id}
+  (dom/li (dom/a {:onClick (fn [] (dr/change-route! this A ["big-detail"]))} label)))
+
+(def ui-data (comp/factory Data {:keyfn :data/id}))
+
+(defsc Datalist [this {:list/keys [data] :as props}]
+  {:initial-state {:list/data []}
+   :query         [:list/id {:list/data (comp/get-query Data)}]
+   :will-enter          (fn [app params]
+                          (log/info "Datalist will enter")
+                          (dr/route-immediate [:list/id :data]))
+   :route-segment ["c"]
+   :ident        :list/id}
+  (dom/div
+   (dom/hr)
+   (map ui-data data)
+   (dom/hr)))
+
 (defrouter RootRouter [this props]
-  {:router-targets [A B]})
+  {:router-targets [A B Datalist BigDetail]})
 (def ui-router (comp/factory RootRouter))
+
+
+(def ui-datalist (comp/factory Datalist))
+
+(defonce SPA (atom nil))
+(comment 
+  
+@SPA
+(keys (app/current-state SPA))
+(-> (app/current-state SPA)
+    ;:data/id
+;    :root/da
+    ;:list/id
+    :data/id
+    )
+  (comp/initial-state Root {})
+  (merge/merge-component! SPA Data [{:data/id 1 :data/label "train" :data/xml "<train/>" :data/txt "train text"}
+                                    {:data/id 2 :data/label "boat" :data/xml "<boat/>" :data/txt "boat text"}]
+                          :replace [:list/id :data :list/data])
+
+
+  )
+
 
 (defsc Root [this {:root/keys [:router] :as props}]
   {:query         [{:root/router (comp/get-query RootRouter)}]
-   :initial-state {:root/router {}}}
-  (dom/div
-    (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["a" "a1"]))} "A1 ")
-    (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["b" "b2"]))} "B2 ")
-    (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["a"]))} "A")
-    (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["b"]))} "B")
-    (ui-router router)))
+   :initial-state (fn [_] {:root/router (comp/get-initial-state RootRouter {})
+                          :root/datalist (comp/get-initial-state Datalist {:id :data})})}
+  
+    (let [current-tab (some-> (dr/current-route this this) first keyword)]
+      (dom/div :.ui.container {:style {:border "1px dotted red"}}
+               (dom/div :.ui.secondary.pointing.menu
+                        (dom/a :.item {:classes [(when (= :a current-tab) "active")]
+                                       :onClick (fn [] (dr/change-route this ["a"]))} "A")
+                        (dom/a :.item {:classes [(when (= :b current-tab) "active")]
+                                       :onClick (fn [] (dr/change-route this ["b"]))} "B")
+                        (dom/a :.item {:classes [(when (= :c current-tab) "active")]
+                                       :onClick (fn [] (dr/change-route this ["c"]))} "Datalist"))
 
-(defonce SPA (atom nil))
+               #_(ui-datalist datalist)
+               (dom/hr)
+               (ui-router router)
+               (dom/hr)
+               (dom/div
+                (dom/h2 "Global navigation")
+                (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["a" "a1"]))} "A1 ")
+                (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["b" "b2"]))} "B2 ")
+                (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["a"]))} "A")
+                (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["b"]))} "B")
+                (dom/hr)
+               (dr/current-route SPA)
+                ))))
+
 (ws/defcard nested-routing-demo
   (ct.fulcro/fulcro-card
     {::ct.fulcro/wrap-root? false
      ::ct.fulcro/root       Root
-     ::ct.fulcro/app        {:client-will-mount (fn [app]
-                                                  (reset! SPA app)
-                                                  (dr/initialize! app)
-                                                  (dr/change-route! app ["a" "a1"]))}}))
+     ::ct.fulcro/app
+     {:client-will-mount
+      (fn [app]
+        (reset! SPA app)
+        (dr/initialize! app)
+        (merge/merge-component! app Data [{:data/id 1 :data/label "train" :data/xml "<train/>" :data/txt "train text"}
+                                          {:data/id 2 :data/label "boat" :data/xml "<boat/>" :data/txt "boat text"}]
+                                :replace [:list/id :data :list/data])
+        (dr/change-route! app ["a" "a1"]))}}))
