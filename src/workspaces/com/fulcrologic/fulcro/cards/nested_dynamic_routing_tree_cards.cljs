@@ -146,7 +146,7 @@
 
 (defsc BigDetail [this {:data/keys [id label pic txt] :as props router :ui/router}]
   {:query               [:data/id :data/label :data/pic :data/txt {:ui/router (comp/get-query TabRouter)}]
-   :route-segment       ["d" :data/id] ;; intentionaly left out
+   :route-segment       ["d" :data/id] 
    :will-enter          (fn [app params]
                           (log/info "BigDetail will enter, params:" params)
                           (dr/route-immediate [:data/id (js/parseInt (:data/id params))]))
@@ -225,7 +225,7 @@
                 (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["d" "2" "pic" "2"]))} "D .pic")
                 (dom/button {:onClick (fn [] (dr/change-route-relative! this Root ["d" "2" "txt" "2"]))} "D .txt")
                 (dom/hr)
-               (clojure.string/join ", " (dr/current-route SPA))
+               (clojure.string/join "/" (dr/current-route SPA))
                 ))))
 
 (ws/defcard nested-routing-demo
